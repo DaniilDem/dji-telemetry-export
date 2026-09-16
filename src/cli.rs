@@ -49,6 +49,10 @@ pub struct Args {
     #[arg(long, default_value = "")]
     pub invert: String,
 
+    /// Do not level the axes (keep the camera's own pitch / roll relative to the vehicle)
+    #[arg(long)]
+    pub no_level: bool,
+
     /// Export rate: native, or a value in Hz (e.g. 10). Per-format defaults apply to "native".
     #[arg(long, default_value = "native")]
     pub rate: String,
@@ -143,6 +147,7 @@ pub fn build_process_options(args: &Args, clip: &Clip) -> anyhow::Result<Process
         gravity,
         highpass_window_s: args.highpass_window,
         axes,
+        level: !args.no_level,
         rate: ExportRate::Native,
         unit_override,
     })
@@ -232,6 +237,14 @@ pub fn summary_lines(telemetry: &Telemetry) -> Vec<(String, String)> {
                 g[2]
             ),
             None => telemetry.gravity_used.cli_name().to_string(),
+        },
+    );
+    push(
+        "Camera tilt",
+        match telemetry.tilt_deg {
+            Some(t) if telemetry.levelled => format!("{t:.1}° off the vertical axis — levelled out"),
+            Some(t) => format!("{t:.1}° off the vertical axis — NOT levelled (--no-level)"),
+            None => "unknown (no gravity estimate)".to_string(),
         },
     );
     let gps = match (&info.remote_name, info.gps_fix_count) {
@@ -411,6 +424,14 @@ fn summary_json(telemetry: &Telemetry) -> String {
             "\"axis_medians_g\": [{:.4}, {:.4}, {:.4}]",
             telemetry.axis_medians[0], telemetry.axis_medians[1], telemetry.axis_medians[2]
         ),
+        format!(
+            "\"camera_tilt_deg\": {}",
+            telemetry
+                .tilt_deg
+                .map(|t| format!("{t:.2}"))
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!("\"levelled\": {}", telemetry.levelled),
         format!(
             "\"start_local\": \"{}\"",
             info.start_local

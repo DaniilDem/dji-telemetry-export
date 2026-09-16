@@ -461,6 +461,20 @@ impl App {
                     ui.colored_label(Color32::from_rgb(220, 80, 80), "Each of X, Y, Z must be used exactly once.");
                 }
             });
+            ui.horizontal(|ui| {
+                if ui
+                    .checkbox(&mut self.process_options.level, "Level to the vehicle (compensate camera tilt)")
+                    .on_hover_text(
+                        "Rotates the readings so that gravity sits exactly on the Vertical axis before the split.                          A camera pitched down 30° would otherwise leak half of every bump into the longitudinal channel.",
+                    )
+                    .changed()
+                {
+                    self.dirty = true;
+                }
+                if let Some(tilt) = self.telemetry.as_ref().and_then(|t| t.tilt_deg) {
+                    ui.label(RichText::new(format!("camera tilt {tilt:.1}°")).weak());
+                }
+            });
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label("Export rate");

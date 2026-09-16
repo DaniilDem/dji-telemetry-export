@@ -45,8 +45,16 @@ No installer, no runtime, no network access.
    * *Gravity removal* — the default uses the attitude quaternion (keeps sustained cornering G);
      a moving-average high-pass and "keep gravity" are also available.
    * *Body axis to vehicle axis* — the axis whose median reads ±1 g holds gravity and is pre-selected
-     as **Vertical**; choose which of the other two is **Lateral** (across the vehicle) and
-     **Longitudinal** (along it), and tick *invert* if right / forward come out negative.
+     as **Vertical**. The camera's X axis is its optical axis, so on a normal forward-facing mount
+     it is pre-selected as **Longitudinal** (along the vehicle) and the remaining axis as
+     **Lateral** (across it). Swap them if the camera looks sideways, and tick *invert* if right /
+     forward come out negative (a right-hand corner should read positive lateral, braking negative
+     longitudinal).
+   * *Level to the vehicle* — on by default. Cameras are rarely mounted dead level; a camera pitched
+     30° down would otherwise leak half of every bump into the longitudinal channel and report
+     only 87 % of the real braking G. The readings are rotated per sample (using the attitude
+     quaternion) so that gravity sits exactly on the vertical axis before the split. The detected
+     tilt is shown next to the checkbox and in `--info`.
    * *Export rate* — native (one row per frame) or 10 / 5 / 1 Hz.
 4. **Export** — tick the formats and press *Export*. Files are written next to the video as
    `<clip name>.<ext>` unless you choose another folder.
@@ -72,6 +80,7 @@ dji-telemetry-export <VIDEO> [OPTIONS]
       --highpass-window <S>  window for --gravity highpass         [default: 1.0]
       --axes <SPEC>        auto | xyz | lateral=x,longitudinal=y,vertical=z   [default: auto]
       --invert <LIST>      lateral,longitudinal,vertical
+      --no-level           keep the camera's own pitch / roll instead of levelling to the vehicle
       --rate <RATE>        native | <Hz>                           [default: native]
       --unit <g|ms2|mg>    override accelerometer unit detection
       --raw-axes           add raw X/Y/Z columns (CSV)

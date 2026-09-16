@@ -242,23 +242,32 @@ pub fn axis_medians(samples: &[Sample], scale: f64) -> [f64; 3] {
     out
 }
 
-/// Guesses the mapping: the axis holding gravity is vertical; the other two keep the
-/// X→lateral, Y→longitudinal order from ExifTool's documentation. The sign of the
-/// vertical axis is flipped so that +1 g at rest reads as "up".
+/// Guesses the mapping: the axis holding gravity is vertical. Of the remaining two, X — the
+/// camera's optical axis, which points along the vehicle on a normal forward-facing mount — is
+/// longitudinal and the other is lateral. When X itself holds gravity (lens pointing up or
+/// down) there is nothing to go on, so Y is taken as lateral and Z as longitudinal. The sign
+/// of the vertical axis is flipped so that +1 g at rest reads as "up".
 pub fn auto_axis_map(medians: [f64; 3]) -> AxisMap {
     let mut order: Vec<usize> = (0..3).collect();
     order.sort_by(|&a, &b| medians[b].abs().total_cmp(&medians[a].abs()));
     let vertical_idx = order[0];
     let vertical = Axis::ALL[vertical_idx];
-    let mut rest: Vec<Axis> = Axis::ALL
+    let rest: Vec<Axis> = Axis::ALL
         .iter()
         .copied()
         .filter(|a| a.index() != vertical_idx)
         .collect();
-    rest.sort_by_key(|a| a.index());
+    let (lateral, longitudinal) = if vertical == Axis::X {
+        (rest[0], rest[1])
+    } else {
+        (
+            rest.into_iter().find(|a| *a != Axis::X).unwrap_or(Axis::Y),
+            Axis::X,
+        )
+    };
     AxisMap {
-        lateral: rest[0],
-        longitudinal: rest[1],
+        lateral,
+        longitudinal,
         vertical,
         invert_lateral: false,
         invert_longitudinal: false,
@@ -293,6 +302,11 @@ pub struct ProcessOptions {
     pub gravity: GravityMode,
     pub highpass_window_s: f64,
     pub axes: AxisMap,
+    /// Rotate the body frame so that gravity lies exactly on the vertical axis before the
+    /// lateral / longitudinal / vertical split. Compensates a camera that is pitched or rolled
+    /// relative to the vehicle; per sample when the attitude quaternion is available, otherwise
+    /// with the clip's median gravity direction.
+    pub level: bool,
     pub rate: ExportRate,
     /// Override the detected accelerometer unit.
     pub unit_override: Option<AccelUnit>,
@@ -304,6 +318,7 @@ impl Default for ProcessOptions {
             gravity: GravityMode::Quaternion,
             highpass_window_s: 1.0,
             axes: AxisMap::default(),
+            level: true,
             rate: ExportRate::Native,
             unit_override: None,
         }
@@ -356,6 +371,12 @@ pub struct Telemetry {
     /// World-frame gravity vector estimated by the quaternion method.
     pub gravity_world: Option<[f64; 3]>,
     pub axis_medians: [f64; 3],
+    /// Median angle between the measured gravity direction and the chosen vertical axis —
+    /// how far the camera is pitched / rolled off the vehicle's vertical. `None` when it
+    /// could not be estimated.
+    pub tilt_deg: Option<f64>,
+    /// Whether the exported axes were levelled (see [`ProcessOptions::level`]).
+    pub levelled: bool,
     pub rows: Vec<Row>,
     pub gps_rows: usize,
 }
@@ -408,6 +429,68 @@ fn normalized(q: [f64; 4]) -> Option<[f64; 4]> {
         return None;
     }
     Some([q[0] / n, q[1] / n, q[2] / n, q[3] / n])
+}
+
+fn unit3(v: [f64; 3]) -> Option<[f64; 3]> {
+    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if n < 1e-6 || !n.is_finite() {
+        return None;
+    }
+    Some([v[0] / n, v[1] / n, v[2] / n])
+}
+
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Applies to `v` the smallest rotation that takes unit vector `from` onto unit vector `to`
+/// (Rodrigues' formula).
+fn rotate_onto(from: [f64; 3], to: [f64; 3], v: [f64; 3]) -> [f64; 3] {
+    let c = dot3(from, to).clamp(-1.0, 1.0);
+    let axis = cross3(from, to);
+    let s = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    if s < 1e-9 {
+        if c > 0.0 {
+            return v;
+        }
+        // Exactly opposite: rotate 180° about any axis perpendicular to `from`.
+        let helper = if from[0].abs() < 0.9 {
+            [1.0, 0.0, 0.0]
+        } else {
+            [0.0, 1.0, 0.0]
+        };
+        let k = unit3(cross3(from, helper)).unwrap_or([0.0, 0.0, 1.0]);
+        let kv = dot3(k, v);
+        return [
+            2.0 * k[0] * kv - v[0],
+            2.0 * k[1] * kv - v[1],
+            2.0 * k[2] * kv - v[2],
+        ];
+    }
+    let k = [axis[0] / s, axis[1] / s, axis[2] / s];
+    let kxv = cross3(k, v);
+    let kv = dot3(k, v) * (1.0 - c);
+    [
+        v[0] * c + kxv[0] * s + k[0] * kv,
+        v[1] * c + kxv[1] * s + k[1] * kv,
+        v[2] * c + kxv[2] * s + k[2] * kv,
+    ]
+}
+
+/// Unit vector along the vehicle's vertical axis in the body frame, pointing the way an
+/// accelerometer reads gravity at rest (+1 g "up").
+fn body_up(axes: &AxisMap) -> [f64; 3] {
+    let mut up = [0.0; 3];
+    up[axes.vertical.index()] = if axes.invert_vertical { -1.0 } else { 1.0 };
+    up
 }
 
 /// Body-frame dynamic acceleration per sample plus the estimated world-frame gravity vector.
@@ -525,15 +608,15 @@ pub fn process(clip: &Clip, options: &ProcessOptions) -> Telemetry {
     let quats: Vec<Option<[f64; 4]>> = samples.iter().map(|s| s.quat).collect();
     let medians = axis_medians(samples, scale);
 
+    // The quaternion estimate is computed whenever attitude is available: even when another
+    // gravity mode is selected it still provides the per-sample gravity direction for levelling.
+    let quat_estimate = remove_gravity_quat(&acc_g, &quats);
+    let gravity_world = quat_estimate.as_ref().map(|(_, g)| *g);
     let mut gravity_used = options.gravity;
-    let mut gravity_world = None;
     let dynamic: Vec<Option<[f64; 3]>> = match options.gravity {
         GravityMode::None => acc_g.clone(),
-        GravityMode::Quaternion => match remove_gravity_quat(&acc_g, &quats) {
-            Some((d, g)) => {
-                gravity_world = Some(g);
-                d
-            }
+        GravityMode::Quaternion => match quat_estimate {
+            Some((d, _)) => d,
             None => {
                 gravity_used = GravityMode::HighPass;
                 remove_gravity_highpass(&acc_g, &times, options.highpass_window_s)
@@ -543,6 +626,31 @@ pub fn process(clip: &Clip, options: &ProcessOptions) -> Telemetry {
     };
 
     let axes = options.axes;
+    let up = body_up(&axes);
+    // Direction gravity reads in the body frame: per sample from the attitude quaternion when
+    // possible, otherwise the clip-wide median. `None` when there is nothing to level with.
+    let world_up = gravity_world.and_then(unit3);
+    let static_up = unit3(medians).filter(|_| medians.iter().map(|m| m * m).sum::<f64>().sqrt() > 0.5);
+    let gravity_dir = |i: usize| -> Option<[f64; 3]> {
+        match (world_up, quats[i].and_then(normalized)) {
+            (Some(g), Some(q)) => unit3(rotate(q, g, true)),
+            _ => static_up,
+        }
+    };
+    let mut tilts: Vec<f64> = Vec::with_capacity(samples.len());
+    let dynamic: Vec<Option<[f64; 3]>> = dynamic
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let d = (*d)?;
+            let Some(g) = gravity_dir(i) else { return Some(d) };
+            tilts.push(dot3(g, up).clamp(-1.0, 1.0).acos().to_degrees());
+            Some(if options.level { rotate_onto(g, up, d) } else { d })
+        })
+        .collect();
+    let tilt_deg = median(&mut tilts);
+    let levelled = options.level && tilt_deg.is_some();
+
     let pick = |v: &[f64; 3], axis: Axis, invert: bool| {
         let x = v[axis.index()];
         if invert {
@@ -633,6 +741,8 @@ pub fn process(clip: &Clip, options: &ProcessOptions) -> Telemetry {
         gravity_used,
         gravity_world,
         axis_medians: medians,
+        tilt_deg,
+        levelled,
         rows,
         gps_rows,
     }
@@ -732,12 +842,20 @@ mod tests {
         assert_eq!(m.lateral, Axis::Y);
         assert_eq!(m.longitudinal, Axis::Z);
         assert!(m.invert_vertical);
+        // Upright camera: the optical axis X runs along the vehicle.
         let m = auto_axis_map([0.01, 0.02, 0.99]);
         assert_eq!(
             (m.lateral, m.longitudinal, m.vertical),
-            (Axis::X, Axis::Y, Axis::Z)
+            (Axis::Y, Axis::X, Axis::Z)
         );
         assert!(!m.invert_vertical);
+        // Portrait mount: gravity on Y, X still longitudinal.
+        let m = auto_axis_map([0.02, -0.98, 0.1]);
+        assert_eq!(
+            (m.lateral, m.longitudinal, m.vertical),
+            (Axis::Z, Axis::X, Axis::Y)
+        );
+        assert!(m.invert_vertical);
     }
 
     #[test]
@@ -823,6 +941,112 @@ mod tests {
         assert!(t.rows[10].lateral.unwrap().abs() < 1e-9);
         assert!((t.rows[55].lateral.unwrap() - 0.3).abs() < 1e-9);
         assert!(t.rows[55].vertical.unwrap().abs() < 1e-9);
+    }
+
+    #[test]
+    fn rotate_onto_moves_vector_and_is_identity_for_aligned_axes() {
+        let v = rotate_onto([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]);
+        assert!((v[0]).abs() < 1e-12 && (v[1] - 1.0).abs() < 1e-12 && v[2].abs() < 1e-12);
+        let v = rotate_onto([0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.3, -0.2, 0.9]);
+        assert_eq!(v, [0.3, -0.2, 0.9]);
+        // Antipodal: length preserved and `from` lands on `to`.
+        let v = rotate_onto([0.0, 0.0, 1.0], [0.0, 0.0, -1.0], [0.0, 0.0, 1.0]);
+        assert!((v[2] + 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn levelling_removes_camera_pitch_from_the_vehicle_axes() {
+        // Camera pitched 30° nose-down about body Y; world Z reads +1 g at rest. A burst of
+        // 0.5 g straight ahead (world X) must show up entirely as longitudinal once levelled.
+        let phi = 30f64.to_radians();
+        let q = [(phi / 2.0).cos(), 0.0, (phi / 2.0).sin(), 0.0];
+        let samples: Vec<Sample> = (0..60)
+            .map(|i| {
+                let world = if i >= 50 { [0.5, 0.0, 1.0] } else { [0.0, 0.0, 1.0] };
+                sample(i as f64 / 30.0, rotate(q, world, true), Some(q))
+            })
+            .collect();
+        let clip = Clip {
+            info: ClipInfo::default(),
+            samples,
+        };
+        let medians = axis_medians(&clip.samples, 1.0);
+        assert!((medians[2].abs() - phi.cos()).abs() < 1e-9, "{medians:?}");
+        let axes = auto_axis_map(medians);
+        assert_eq!(
+            (axes.lateral, axes.longitudinal, axes.vertical),
+            (Axis::Y, Axis::X, Axis::Z)
+        );
+
+        let levelled = process(
+            &clip,
+            &ProcessOptions {
+                axes,
+                ..ProcessOptions::default()
+            },
+        );
+        assert!(levelled.levelled);
+        assert!((levelled.tilt_deg.unwrap() - 30.0).abs() < 1e-6);
+        let r = &levelled.rows[55];
+        assert!((r.longitudinal.unwrap().abs() - 0.5).abs() < 1e-9, "{r:?}");
+        assert!(r.vertical.unwrap().abs() < 1e-9, "{r:?}");
+        assert!(r.lateral.unwrap().abs() < 1e-9, "{r:?}");
+
+        let raw = process(
+            &clip,
+            &ProcessOptions {
+                axes,
+                level: false,
+                ..ProcessOptions::default()
+            },
+        );
+        assert!(!raw.levelled);
+        let r = &raw.rows[55];
+        // Without levelling the burst is split by the camera pitch.
+        assert!(
+            (r.longitudinal.unwrap().abs() - 0.5 * phi.cos()).abs() < 1e-9,
+            "{r:?}"
+        );
+        assert!(
+            (r.vertical.unwrap().abs() - 0.5 * phi.sin()).abs() < 1e-9,
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn levelling_uses_the_median_gravity_direction_without_attitude() {
+        // Same geometry, no quaternion: the static tilt still gets levelled out.
+        let phi = 30f64.to_radians();
+        let q = [(phi / 2.0).cos(), 0.0, (phi / 2.0).sin(), 0.0];
+        let samples: Vec<Sample> = (0..90)
+            .map(|i| {
+                let world = if (50..53).contains(&i) {
+                    [0.5, 0.0, 1.0]
+                } else {
+                    [0.0, 0.0, 1.0]
+                };
+                sample(i as f64 / 30.0, rotate(q, world, true), None)
+            })
+            .collect();
+        let clip = Clip {
+            info: ClipInfo::default(),
+            samples,
+        };
+        let axes = auto_axis_map(axis_medians(&clip.samples, 1.0));
+        let t = process(
+            &clip,
+            &ProcessOptions {
+                axes,
+                gravity: GravityMode::HighPass,
+                ..ProcessOptions::default()
+            },
+        );
+        assert!(t.levelled);
+        assert!((t.tilt_deg.unwrap() - 30.0).abs() < 1e-6);
+        let r = &t.rows[51];
+        // High-pass leaves a little of the burst in the baseline; the split must still be clean.
+        assert!(r.vertical.unwrap().abs() < 0.02, "{r:?}");
+        assert!(r.longitudinal.unwrap().abs() > 0.4, "{r:?}");
     }
 
     #[test]
