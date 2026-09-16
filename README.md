@@ -1,5 +1,7 @@
 # DJI Telemetry Export
 
+[Русская версия](README.ru.md)
+
 Pulls the telemetry that DJI Osmo Action cameras embed in their MP4 files and writes it as
 **CSV, SRT, VBO, GPX, FIT or IGC** — ready to import into [OVRLEY](https://github.com/sstoychev/OVRLEY)
 (or anything else that reads those formats).
