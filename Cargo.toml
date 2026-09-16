@@ -1,6 +1,6 @@
 [package]
 name = "dji-telemetry-export"
-version = "0.1.0"
+version = "1.1.0"
 edition = "2021"
 rust-version = "1.80"
 description = "Extract accelerometer, attitude, exposure and GPS telemetry from DJI Osmo Action MP4 files and export it as CSV / SRT / VBO / GPX / FIT / IGC for OVRLEY"
