@@ -47,9 +47,14 @@ No installer, no runtime, no network access.
    * *Body axis to vehicle axis* — the axis whose median reads ±1 g holds gravity and is pre-selected
      as **Vertical**. The camera's X axis is its optical axis, so on a normal forward-facing mount
      it is pre-selected as **Longitudinal** (along the vehicle) and the remaining axis as
-     **Lateral** (across it). Swap them if the camera looks sideways, and tick *invert* if right /
-     forward come out negative (a right-hand corner should read positive lateral, braking negative
-     longitudinal).
+     **Lateral** (across it). Swap them if the camera looks sideways. Signs follow what a G-force
+     gauge is expected to show — the direction the driver is thrown: braking reads negative
+     longitudinal, a **left**-hand corner reads **positive** lateral. Use *invert* if your setup
+     comes out the other way round. On the Osmo Action 5 Pro (X forward, Y right) the auto
+     mapping is `lateral = -Y, longitudinal = X`.
+   * *G-force gauge* — two switches, *Mirror left / right* and *Swap braking / acceleration*, that
+     flip a channel relative to the default above (same effect as the per-axis *invert* boxes, in
+     gauge terms).
    * *Level to the vehicle* — on by default. Cameras are rarely mounted dead level; a camera pitched
      30° down would otherwise leak half of every bump into the longitudinal channel and report
      only 87 % of the real braking G. The readings are rotated per sample (using the attitude
@@ -67,7 +72,9 @@ Import the video, then import the exported file as the activity. Row 0 of every 
 frame 0, so the sync offset is **0**. For a G-force gauge use the CSV: OVRLEY reads the
 `Lateral acceleration (g)`, `Longitudinal acceleration (g)`, `Vertical acceleration (g)` and
 `Combined acceleration (g)` columns directly (and latitude / longitude / altitude / speed / heading
-when GPS is present).
+when GPS is present). OVRLEY's gauge draws positive lateral to the right and positive longitudinal
+*downwards* (screen coordinates); with the default signs the dot therefore moves up under braking
+and right in a left-hand corner — the way the driver is thrown.
 
 ## Command line
 

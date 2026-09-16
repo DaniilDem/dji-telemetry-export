@@ -361,6 +361,27 @@ impl App {
         });
     }
 
+    /// Checkbox that flips a vehicle axis relative to the auto-detected sign. It is the same
+    /// `invert` flag as in the axis rows, presented in gauge terms: "on" means "the opposite of
+    /// the default", whatever the raw axis sign happens to be.
+    fn flip_toggle(&mut self, ui: &mut egui::Ui, label: &str, which: usize) {
+        let (invert, auto) = match which {
+            0 => (
+                &mut self.process_options.axes.invert_lateral,
+                self.auto_axes.invert_lateral,
+            ),
+            _ => (
+                &mut self.process_options.axes.invert_longitudinal,
+                self.auto_axes.invert_longitudinal,
+            ),
+        };
+        let mut flipped = *invert != auto;
+        if ui.checkbox(&mut flipped, label).changed() {
+            *invert = auto != flipped;
+            self.dirty = true;
+        }
+    }
+
     fn axis_row(&mut self, ui: &mut egui::Ui, name: &str, which: usize) {
         let (axis, invert) = match which {
             0 => (
@@ -461,6 +482,19 @@ impl App {
                     ui.colored_label(Color32::from_rgb(220, 80, 80), "Each of X, Y, Z must be used exactly once.");
                 }
             });
+            ui.add_space(4.0);
+            ui.label(RichText::new("G-force gauge").strong());
+            ui.label(
+                RichText::new(
+                    "Defaults move the dot the way the driver is thrown: up under braking, right in a left-hand corner.                      Flip either direction here if your gauge shows the opposite.",
+                )
+                .weak(),
+            );
+            ui.horizontal(|ui| {
+                self.flip_toggle(ui, "Mirror left / right", 0);
+                self.flip_toggle(ui, "Swap braking / acceleration", 1);
+            });
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 if ui
                     .checkbox(&mut self.process_options.level, "Level to the vehicle (compensate camera tilt)")

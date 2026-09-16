@@ -245,8 +245,15 @@ pub fn axis_medians(samples: &[Sample], scale: f64) -> [f64; 3] {
 /// Guesses the mapping: the axis holding gravity is vertical. Of the remaining two, X — the
 /// camera's optical axis, which points along the vehicle on a normal forward-facing mount — is
 /// longitudinal and the other is lateral. When X itself holds gravity (lens pointing up or
-/// down) there is nothing to go on, so Y is taken as lateral and Z as longitudinal. The sign
-/// of the vertical axis is flipped so that +1 g at rest reads as "up".
+/// down) there is nothing to go on, so Y is taken as lateral and Z as longitudinal.
+///
+/// Signs: the Osmo Action body frame is X forward, Y right, Z down and the reported vector is
+/// the proper acceleration (checked against video on a forward-facing kart clip: a left-hand
+/// corner reads negative on Y, braking negative on X). Longitudinal is taken as is (forward
+/// positive, so braking is negative). Lateral is negated so that a left-hand corner reads
+/// positive: on OVRLEY's G-force gauge that moves the dot the way the driver is thrown
+/// (right in a left-hander, up under braking), which is what people expect to see. The
+/// vertical axis is flipped so that +1 g at rest reads as "up".
 pub fn auto_axis_map(medians: [f64; 3]) -> AxisMap {
     let mut order: Vec<usize> = (0..3).collect();
     order.sort_by(|&a, &b| medians[b].abs().total_cmp(&medians[a].abs()));
@@ -269,9 +276,8 @@ pub fn auto_axis_map(medians: [f64; 3]) -> AxisMap {
         lateral,
         longitudinal,
         vertical,
-        invert_lateral: false,
+        invert_lateral: true,
         invert_longitudinal: false,
-        // Gravity measured by an accelerometer points "up" (+1 g when the axis points up).
         invert_vertical: medians[vertical_idx] < 0.0,
     }
 }
@@ -842,6 +848,7 @@ mod tests {
         assert_eq!(m.lateral, Axis::Y);
         assert_eq!(m.longitudinal, Axis::Z);
         assert!(m.invert_vertical);
+        assert!(m.invert_lateral && !m.invert_longitudinal);
         // Upright camera: the optical axis X runs along the vehicle.
         let m = auto_axis_map([0.01, 0.02, 0.99]);
         assert_eq!(
@@ -937,9 +944,9 @@ mod tests {
             ..ProcessOptions::default()
         };
         let t = process(&clip, &opts);
-        // lateral = Y in this mapping, burst of 0.3 g at the end, vertical ~0 after removal
+        // lateral = -Y in this mapping, burst of 0.3 g at the end, vertical ~0 after removal
         assert!(t.rows[10].lateral.unwrap().abs() < 1e-9);
-        assert!((t.rows[55].lateral.unwrap() - 0.3).abs() < 1e-9);
+        assert!((t.rows[55].lateral.unwrap() + 0.3).abs() < 1e-9);
         assert!(t.rows[55].vertical.unwrap().abs() < 1e-9);
     }
 
