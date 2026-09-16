@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN: dji-telemetry-export
+  APP_NAME: DJI Telemetry Export
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --all-targets
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") { $tag = "manual-" + $env:GITHUB_SHA.Substring(0,7) }
+          $name = "$env:BIN-$tag-windows-x64"
+          New-Item -ItemType Directory -Force dist/$name | Out-Null
+          Copy-Item target/release/$env:BIN.exe dist/$name/
+          Copy-Item README.md, LICENSE dist/$name/
+          Compress-Archive -Path dist/$name/* -DestinationPath dist/$name.zip
+          "ASSET=dist/$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: ${{ env.ASSET }}
+
+  macos:
+    name: macOS universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --all-targets
+      - name: Build both architectures
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+      - name: Bundle .app and .dmg
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then TAG="manual-${GITHUB_SHA::7}"; fi
+          VERSION="${TAG#v}"
+          APP="dist/$APP_NAME.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          lipo -create \
+            "target/aarch64-apple-darwin/release/$BIN" \
+            "target/x86_64-apple-darwin/release/$BIN" \
+            -output "$APP/Contents/MacOS/$BIN"
+          chmod +x "$APP/Contents/MacOS/$BIN"
+          sed -e "s/__VERSION__/$VERSION/g" packaging/Info.plist > "$APP/Contents/Info.plist"
+          printf 'APPL????' > "$APP/Contents/PkgInfo"
+          python3 packaging/make_icns.py "$APP/Contents/Resources/AppIcon.icns" || echo "icon skipped"
+          # Ad-hoc signature so Gatekeeper shows the usual "unidentified developer" flow instead of "damaged".
+          codesign --force --deep --sign - "$APP"
+          # Also ship the bare CLI binary next to the app.
+          cp "$APP/Contents/MacOS/$BIN" "dist/$BIN"
+          NAME="$BIN-$TAG-macos-universal"
+          hdiutil create -volname "$APP_NAME" -srcfolder dist -ov -format UDZO "dist/$NAME.dmg"
+          (cd dist && zip -qr "$NAME.zip" "$APP_NAME.app" "$BIN")
+          echo "DMG=dist/$NAME.dmg" >> "$GITHUB_ENV"
+          echo "ZIP=dist/$NAME.zip" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: |
+            ${{ env.DMG }}
+            ${{ env.ZIP }}
+
+  release:
+    name: Publish GitHub Release
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+      - name: List assets
+        run: find assets -type f
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: assets/**/*
+          generate_release_notes: true
+          body: |
+            ## Downloads
+            * **Windows**: `*-windows-x64.zip` — unzip and run `dji-telemetry-export.exe` (SmartScreen may ask once: "More info" → "Run anyway").
+            * **macOS**: `*-macos-universal.dmg` (Apple Silicon + Intel). The app is not notarised: right-click → Open the first time, or run `xattr -cr "/Applications/DJI Telemetry Export.app"`.
+
+            Run the executable without arguments for the GUI, or with `--help` for the command line.

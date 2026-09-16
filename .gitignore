@@ -1,0 +1,10 @@
+/target
+/out
+*.csv
+*.srt
+*.gpx
+*.fit
+*.igc
+*.vbo
+!tests/fixtures/*
+.DS_Store
