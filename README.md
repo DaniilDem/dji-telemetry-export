@@ -4,6 +4,11 @@ Pulls the telemetry that DJI Osmo Action cameras embed in their MP4 files and wr
 **CSV, SRT, VBO, GPX, FIT or IGC** — ready to import into [OVRLEY](https://github.com/sstoychev/OVRLEY)
 (or anything else that reads those formats).
 
+> **Visualising the data:** use [OVRLEY](https://www.ovrley.cc/) — a free, offline desktop app that turns
+> telemetry files into customisable video overlays (G-force meters, speed, maps, gauges). Export a file
+> with this tool, import it into OVRLEY together with the video, and render the overlay. See
+> [Importing into OVRLEY](#importing-into-ovrley) below.
+
 One self-contained executable for Windows and macOS, with a small GUI and a full command line.
 
 ![GUI screenshot](docs/gui.png)
